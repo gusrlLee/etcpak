@@ -33,8 +33,9 @@ public:
 
     BitmapPtr Decode();
 
-    void Process( const uint32_t* src, uint32_t blocks, size_t offset, size_t width, bool dither, bool useHeuristics );
-    void ProcessRGBA( const uint32_t* src, uint32_t blocks, size_t offset, size_t width, bool useHeuristics, const bc7enc_compress_block_params* params );
+    // edit
+    void Process( const uint32_t* src, uint32_t blocks, size_t offset, size_t width, bool dither, int useHeuristicsMode );
+    void ProcessRGBA( const uint32_t* src, uint32_t blocks, size_t offset, size_t width, int useHeuristicsMode, const bc7enc_compress_block_params* params );
 
     const v2i& Size() const { return m_size; }
 

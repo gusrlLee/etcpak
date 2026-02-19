@@ -13,6 +13,9 @@ include(CheckCompilerFlag)
 include(FindPkgConfig)
 include(CPM.cmake)
 
+add_compile_definitions(__AVX2__)
+add_compile_definitions(__SSE4_1__)
+
 file(GENERATE OUTPUT .gitignore CONTENT "*")
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")

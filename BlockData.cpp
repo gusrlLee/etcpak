@@ -283,7 +283,8 @@ BlockData::~BlockData()
     }
 }
 
-void BlockData::Process( const uint32_t* src, uint32_t blocks, size_t offset, size_t width, bool dither, bool useHeuristics )
+// edit
+void BlockData::Process( const uint32_t* src, uint32_t blocks, size_t offset, size_t width, bool dither, int useHeuristicsMode )
 {
     auto dst = ((uint64_t*)( m_data + m_dataOffset )) + offset;
 
@@ -300,7 +301,7 @@ void BlockData::Process( const uint32_t* src, uint32_t blocks, size_t offset, si
         }
         break;
     case Etc2_RGB:
-        CompressEtc2Rgb( src, dst, blocks, width, useHeuristics );
+        CompressEtc2Rgb( src, dst, blocks, width, useHeuristicsMode );
         break;
     case Etc2_R11:
         CompressEacR( src, dst, blocks, width );
@@ -332,14 +333,15 @@ void BlockData::Process( const uint32_t* src, uint32_t blocks, size_t offset, si
     }
 }
 
-void BlockData::ProcessRGBA( const uint32_t* src, uint32_t blocks, size_t offset, size_t width, bool useHeuristics, const bc7enc_compress_block_params* params )
+// edit
+void BlockData::ProcessRGBA( const uint32_t* src, uint32_t blocks, size_t offset, size_t width, int useHeuristicsMode, const bc7enc_compress_block_params* params )
 {
     auto dst = ((uint64_t*)( m_data + m_dataOffset )) + offset * 2;
 
     switch( m_type )
     {
     case Etc2_RGBA:
-        CompressEtc2Rgba( src, dst, blocks, width, useHeuristics );
+        CompressEtc2Rgba( src, dst, blocks, width, useHeuristicsMode );
         break;
     case Bc3:
         CompressBc3( src, dst, blocks, width );

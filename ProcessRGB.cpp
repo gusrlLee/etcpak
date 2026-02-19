@@ -50,6 +50,10 @@ struct Luma
     float max, min;
     uint8_t minIdx = 255, maxIdx = 255;
     __m128i luma8;
+    // quicketc2_hq
+    uint8_t bgrWeight[3];  // new weigths for b,g,r channels
+    uint8_t maxBgrCh;      // channel which has the max bgr range (0, 1 or 2)
+    uint8_t maxBgrRange; // max bgr range (0~255)
 #elif defined __ARM_NEON && defined __aarch64__
     float max, min;
     uint8_t minIdx = 255, maxIdx = 255;
@@ -272,6 +276,37 @@ static etcpak_force_inline unsigned long _bit_scan_forward( unsigned long mask )
 
 typedef std::array<uint16_t, 4> v4i;
 
+// quicketc2_hq
+// Modified FindBestFit function for using per-block bgrWeight and the common error calculation criteria
+static etcpak_force_inline void FindBestFit2(uint64_t& terr, const uint32_t tsel[8], size_t t[2], v4i a[8], const uint32_t* id, const uint8_t* data, bool rotate, const uint8_t* bgrWeight)
+{
+    int idx[2][16] = { {1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+                       {1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0} };
+
+    for (size_t i = 0; i < 16; i++)
+    {
+        unsigned int bid = id[i];
+
+        uint8_t b = *data++;
+        uint8_t g = *data++;
+        uint8_t r = *data++;
+        data++;
+
+        int dr = a[bid][R] - r;
+        int dg = a[bid][G] - g;
+        int db = a[bid][B] - b;
+
+        int current_idx = (idx[rotate][i]);
+        const int32_t* tab = g_table[t[current_idx]];
+        const uint32_t* sel = &tsel[t[current_idx]];
+        int msb = ((*sel) & 0xFFFF0000) >> 16;
+        int lsb = (*sel) & 0x0000FFFF;
+        int j = ((~(msb >> i) & 0x1) << 1) | ((lsb >> i) & 0x1);
+        int64_t err = abs(dr + tab[j]) * bgrWeight[R] + abs(dg + tab[j]) * bgrWeight[G] + abs(db + tab[j]) * bgrWeight[B];
+        terr += err * err;
+    }
+}
+
 #ifdef __AVX2__
 static etcpak_force_inline __m256i Sum4_AVX2( const uint8_t* data) noexcept
 {
@@ -408,7 +443,7 @@ static etcpak_force_inline uint64_t EncodeAverages_AVX2( const v4i a[8], size_t 
     return d;
 }
 
-static etcpak_force_inline uint64_t CheckSolid_AVX2( const uint8_t* src ) noexcept
+static etcpak_force_inline uint64_t CheckSolid_AVX2( const uint8_t* src, bool hqMode) noexcept
 {
     __m256i d0 = _mm256_loadu_si256(((__m256i*)src) + 0);
     __m256i d1 = _mm256_loadu_si256(((__m256i*)src) + 1);
@@ -424,6 +459,9 @@ static etcpak_force_inline uint64_t CheckSolid_AVX2( const uint8_t* src ) noexce
     {
         return 0;
     }
+
+    if (hqMode)
+        return 1;
 
     return 0x02000000 |
         ( (unsigned int)( src[0] & 0xF8 ) << 16 ) |
@@ -447,10 +485,11 @@ static etcpak_force_inline __m128i PrepareAverages_AVX2( v4i a[8], const __m256i
     return CalcErrorBlock_AVX2( sum4, a);
 }
 
-static etcpak_force_inline void FindBestFit_4x2_AVX2( uint32_t terr[2][8], uint32_t tsel[8], v4i a[8], const uint32_t offset, const uint8_t* data) noexcept
+static etcpak_force_inline void FindBestFit_4x2_AVX2(uint32_t terr[2][8], uint32_t tsel[8], v4i a[8], const uint32_t offset, const uint8_t* data, const uint8_t* bgrWeight, const bool hqMode) noexcept
 {
     __m256i sel0 = _mm256_setzero_si256();
     __m256i sel1 = _mm256_setzero_si256();
+    const uint8_t wr = bgrWeight[R], wg = bgrWeight[G], wb = bgrWeight[B];
 
     for (unsigned int j = 0; j < 2; ++j)
     {
@@ -471,7 +510,11 @@ static etcpak_force_inline void FindBestFit_4x2_AVX2( uint32_t terr[2][8], uint3
 
             // The scaling values are divided by two and rounded, to allow the differences to be in the range of signed int16
             // This produces slightly different results, but is significant faster
-            __m256i pixel0 = _mm256_madd_epi16(d, _mm256_set_epi16(0, 38, 76, 14, 0, 38, 76, 14, 0, 38, 76, 14, 0, 38, 76, 14));
+            __m256i pixel0;
+            if (hqMode)
+                pixel0 = _mm256_madd_epi16(d, _mm256_set_epi16(0, wr, wg, wb, 0, wr, wg, wb, 0, wr, wg, wb, 0, wr, wg, wb));
+            else
+                pixel0 = _mm256_madd_epi16(d, _mm256_set_epi16(0, 38, 76, 14, 0, 38, 76, 14, 0, 38, 76, 14, 0, 38, 76, 14));
             __m256i pixel1 = _mm256_packs_epi32(pixel0, pixel0);
             __m256i pixel2 = _mm256_hadd_epi16(pixel1, pixel1);
             __m128i pixel3 = _mm256_castsi256_si128(pixel2);
@@ -574,10 +617,11 @@ static etcpak_force_inline void FindBestFit_4x2_AVX2( uint32_t terr[2][8], uint3
     _mm256_store_si256((__m256i*)tsel, sel);
 }
 
-static etcpak_force_inline void FindBestFit_2x4_AVX2( uint32_t terr[2][8], uint32_t tsel[8], v4i a[8], const uint32_t offset, const uint8_t* data) noexcept
+static etcpak_force_inline void FindBestFit_2x4_AVX2( uint32_t terr[2][8], uint32_t tsel[8], v4i a[8], const uint32_t offset, const uint8_t* data, uint8_t* bgrWeight, const bool hqMode) noexcept
 {
     __m256i sel0 = _mm256_setzero_si256();
     __m256i sel1 = _mm256_setzero_si256();
+    const uint8_t wr = bgrWeight[R], wg = bgrWeight[G], wb = bgrWeight[B];
 
     __m256i squareErrorSum0 = _mm256_setzero_si256();
     __m256i squareErrorSum1 = _mm256_setzero_si256();
@@ -599,7 +643,13 @@ static etcpak_force_inline void FindBestFit_2x4_AVX2( uint32_t terr[2][8], uint3
 
         // The scaling values are divided by two and rounded, to allow the differences to be in the range of signed int16
         // This produces slightly different results, but is significant faster
-        __m256i pixel0 = _mm256_madd_epi16(d, _mm256_set_epi16(0, 38, 76, 14, 0, 38, 76, 14, 0, 38, 76, 14, 0, 38, 76, 14));
+
+        __m256i pixel0;
+        if (hqMode)
+            pixel0 = _mm256_madd_epi16(d, _mm256_set_epi16(0, wr, wg, wb, 0, wr, wg, wb, 0, wr, wg, wb, 0, wr, wg, wb));
+        else
+            pixel0 = _mm256_madd_epi16(d, _mm256_set_epi16(0, 38, 76, 14, 0, 38, 76, 14, 0, 38, 76, 14, 0, 38, 76, 14));
+
         __m256i pixel1 = _mm256_packs_epi32(pixel0, pixel0);
         __m256i pixel2 = _mm256_hadd_epi16(pixel1, pixel1);
         __m128i pixel3 = _mm256_castsi256_si128(pixel2);
@@ -792,7 +842,7 @@ static etcpak_force_inline __m128i r6g7b6_AVX2(__m128 cof, __m128 chf, __m128 cv
     return _mm_shuffle_epi8(cohv5, _mm_setr_epi8(6, 5, 4, -1, 2, 1, 0, -1, 10, 9, 8, -1, -1, -1, -1, -1));
 }
 
-static etcpak_force_inline Plane Planar_AVX2( const Channels& ch, uint8_t& mode, bool useHeuristics )
+static etcpak_force_inline Plane Planar_AVX2( const Channels& ch, uint8_t& mode, int useHeuristicsMode, const uint8_t* bgrWeight)
 {
     __m128i t0 = _mm_sad_epu8( ch.r8, _mm_setzero_si128() );
     __m128i t1 = _mm_sad_epu8( ch.g8, _mm_setzero_si128() );
@@ -816,7 +866,7 @@ static etcpak_force_inline Plane Planar_AVX2( const Channels& ch, uint8_t& mode,
     __m256i srb = _mm256_or_si256( sr1, sb0 );
     __m256i srgb = _mm256_or_si256( srb, sg1 );
 
-    if( mode != ModePlanar && useHeuristics )
+    if( mode != ModePlanar && useHeuristicsMode == 1 )
     {
         Plane plane;
         plane.sum4 = _mm256_permute4x64_epi64( srgb, _MM_SHUFFLE( 2, 3, 0, 1 ) );
@@ -892,7 +942,7 @@ static etcpak_force_inline Plane Planar_AVX2( const Channels& ch, uint8_t& mode,
 
     // Error calculation
     uint64_t error = 0;
-    if( !useHeuristics )
+    if( useHeuristicsMode != 1 )
     {
         auto ro0 = ( rgbho >> 48 ) & 0x3F;
         auto go0 = ( rgbho >> 40 ) & 0x7F;
@@ -970,9 +1020,23 @@ static etcpak_force_inline Plane Planar_AVX2( const Channels& ch, uint8_t& mode,
         __m256i gdif = _mm256_sub_epi16( g08, gp2 );
         __m256i bdif = _mm256_sub_epi16( b08, bp2 );
 
-        __m256i rerr = _mm256_mullo_epi16( rdif, _mm256_set1_epi16( 38 ) );
-        __m256i gerr = _mm256_mullo_epi16( gdif, _mm256_set1_epi16( 76 ) );
-        __m256i berr = _mm256_mullo_epi16( bdif, _mm256_set1_epi16( 14 ) );
+        __m256i rerr, gerr, berr;
+        if (useHeuristicsMode == 2)
+        {
+            rdif = _mm256_abs_epi16(rdif);
+            gdif = _mm256_abs_epi16(gdif);
+            bdif = _mm256_abs_epi16(bdif);
+
+            rerr = _mm256_mullo_epi16(rdif, _mm256_set1_epi16(bgrWeight[R]));
+            gerr = _mm256_mullo_epi16(gdif, _mm256_set1_epi16(bgrWeight[G]));
+            berr = _mm256_mullo_epi16(bdif, _mm256_set1_epi16(bgrWeight[B]));
+        }
+        else
+        {
+            rerr = _mm256_mullo_epi16(rdif, _mm256_set1_epi16(38));
+            gerr = _mm256_mullo_epi16(gdif, _mm256_set1_epi16(76));
+            berr = _mm256_mullo_epi16(bdif, _mm256_set1_epi16(14));
+        }
 
         __m256i sum0 = _mm256_add_epi16( rerr, gerr );
         __m256i sum1 = _mm256_add_epi16( sum0, berr );
@@ -1006,7 +1070,7 @@ static etcpak_force_inline Plane Planar_AVX2( const Channels& ch, uint8_t& mode,
     Plane plane;
 
     plane.plane = result;
-    if( useHeuristics )
+    if( useHeuristicsMode == 1 )
     {
         plane.error = 0;
         mode = ModePlanar;
@@ -1020,7 +1084,7 @@ static etcpak_force_inline Plane Planar_AVX2( const Channels& ch, uint8_t& mode,
     return plane;
 }
 
-static etcpak_force_inline uint64_t EncodeSelectors_AVX2( uint64_t d, const uint32_t terr[2][8], const uint32_t tsel[8], const bool rotate, const uint64_t value, const uint32_t error) noexcept
+static etcpak_force_inline uint64_t EncodeSelectors_AVX2( uint64_t d, const uint32_t terr[2][8], const uint32_t tsel[8], const bool rotate, const uint64_t value, const uint32_t error, v4i a[8], const uint32_t* id, const uint8_t* data, const uint8_t* bgrWeight, bool correctError, const bool hqMode) noexcept
 {
     size_t tidx[2];
 
@@ -1051,9 +1115,24 @@ static etcpak_force_inline uint64_t EncodeSelectors_AVX2( uint64_t d, const uint
     tidx[0] = _bit_scan_forward(mask0) >> 2;
     tidx[1] = _bit_scan_forward(mask1) >> 2;
 
-    if ((terr[0][tidx[0]] + terr[1][tidx[1]]) >= error)
+    if (hqMode)
     {
-        return value;
+        uint64_t err = 0;
+        // Only if the current mode is T or H and the default bgrWeight is used, new error calculation fuction is called.
+        if (correctError && bgrWeight[G] == 76 && error < MaxError)
+            FindBestFit2(err, tsel, tidx, a, id, data, rotate, bgrWeight);
+        else
+            err = terr[0][tidx[0]] + terr[1][tidx[1]];
+
+        if (err >= error)
+            return value;
+    }
+    else
+    {
+        if ((terr[0][tidx[0]] + terr[1][tidx[1]]) >= error)
+        {
+            return value;
+        }
     }
 
     d |= tidx[0] << 26;
@@ -2118,8 +2197,10 @@ static etcpak_force_inline std::pair<uint64_t, uint64_t> Planar_NEON( const uint
 
 #endif
 
+
+// TODO: Check this point
 #ifdef __AVX2__
-uint32_t calculateErrorTH( bool tMode, uint8_t( colorsRGB444 )[2][3], uint8_t& dist, uint32_t& pixIndices, uint8_t startDist, __m128i r8, __m128i g8, __m128i b8 )
+uint32_t calculateErrorTH( bool tMode, uint8_t( colorsRGB444 )[2][3], uint8_t& dist, uint32_t& pixIndices, uint8_t startDist, __m128i r8, __m128i g8, __m128i b8, const uint8_t* bgrWeight, const bool hqMode)
 #else
 uint32_t calculateErrorTH( bool tMode, uint8_t* src, uint8_t( colorsRGB444 )[2][3], uint8_t& dist, uint32_t& pixIndices, uint8_t startDist )
 #endif
@@ -2134,6 +2215,59 @@ uint32_t calculateErrorTH( bool tMode, uint8_t* src, uint8_t( colorsRGB444 )[2][
 
 #ifdef __AVX2__
     __m128i reverseMask = _mm_set_epi8( 0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15 );
+
+    static const __m128i zero = _mm_setzero_si128();
+    __m128i b8Rev, g8Rev, r8Rev, b8Lo, g8Lo, r8Lo, b8Hi, g8Hi, r8Hi;
+    __m256i b8_256, g8_256, r8_256;
+    __m256i bWeight, gWeight, rWeight;
+
+    if (hqMode)
+    {
+        // Optimization by handling the repetitive calculations outside the loop
+        // RGB ordering
+        b8Rev = _mm_shuffle_epi8(b8, reverseMask);
+        g8Rev = _mm_shuffle_epi8(g8, reverseMask);
+        r8Rev = _mm_shuffle_epi8(r8, reverseMask);
+
+        // extends 3x128 bits RGB into 3x256 bits RGB for error comparisions
+        static const __m128i zero = _mm_setzero_si128();
+        b8Lo = _mm_unpacklo_epi8(b8Rev, zero);
+        g8Lo = _mm_unpacklo_epi8(g8Rev, zero);
+        r8Lo = _mm_unpacklo_epi8(r8Rev, zero);
+        b8Hi = _mm_unpackhi_epi8(b8Rev, zero);
+        g8Hi = _mm_unpackhi_epi8(g8Rev, zero);
+        r8Hi = _mm_unpackhi_epi8(r8Rev, zero);
+
+        b8_256 = _mm256_set_m128i(b8Hi, b8Lo);
+        g8_256 = _mm256_set_m128i(g8Hi, g8Lo);
+        r8_256 = _mm256_set_m128i(r8Hi, r8Lo);
+
+        bWeight = _mm256_set1_epi16(bgrWeight[B]);
+        gWeight = _mm256_set1_epi16(bgrWeight[G]);
+        rWeight = _mm256_set1_epi16(bgrWeight[R]);
+    }
+    else
+    {
+        b8Rev = _mm_shuffle_epi8(b8, reverseMask);
+        g8Rev = _mm_shuffle_epi8(g8, reverseMask);
+        r8Rev = _mm_shuffle_epi8(r8, reverseMask);
+        
+        b8Lo = _mm_unpacklo_epi8(b8Rev, zero);
+        g8Lo = _mm_unpacklo_epi8(g8Rev, zero);
+        r8Lo = _mm_unpacklo_epi8(r8Rev, zero);
+        b8Hi = _mm_unpackhi_epi8(b8Rev, zero);
+        g8Hi = _mm_unpackhi_epi8(g8Rev, zero);
+        r8Hi = _mm_unpackhi_epi8(r8Rev, zero);
+        
+        b8_256 = _mm256_set_m128i(b8Hi, b8Lo);
+        g8_256 = _mm256_set_m128i(g8Hi, g8Lo);
+        r8_256 = _mm256_set_m128i(r8Hi, r8Lo);
+
+        bWeight = _mm256_set1_epi16(14);
+        gWeight = _mm256_set1_epi16(76);
+        rWeight = _mm256_set1_epi16(38);
+    }
+
 #endif
 
     // test distances
@@ -2155,6 +2289,7 @@ uint32_t calculateErrorTH( bool tMode, uint8_t* src, uint8_t( colorsRGB444 )[2][
 
 #ifdef __AVX2__
         // RGB ordering
+#if 0
         __m128i b8Rev = _mm_shuffle_epi8( b8, reverseMask );
         __m128i g8Rev = _mm_shuffle_epi8( g8, reverseMask );
         __m128i r8Rev = _mm_shuffle_epi8( r8, reverseMask );
@@ -2171,16 +2306,15 @@ uint32_t calculateErrorTH( bool tMode, uint8_t* src, uint8_t( colorsRGB444 )[2][
         __m256i b8 = _mm256_set_m128i( b8Hi, b8Lo );
         __m256i g8 = _mm256_set_m128i( g8Hi, g8Lo );
         __m256i r8 = _mm256_set_m128i( r8Hi, r8Lo );
+#endif
+        __m256i b8 = b8_256;
+        __m256i g8 = g8_256;
+        __m256i r8 = r8_256;
 
         // caculates differences between the pixel colrs and the palette colors
         __m256i diffb = _mm256_abs_epi16( _mm256_sub_epi16( b8, _mm256_set1_epi16( possibleColors[0][B] ) ) );
         __m256i diffg = _mm256_abs_epi16( _mm256_sub_epi16( g8, _mm256_set1_epi16( possibleColors[0][G] ) ) );
         __m256i diffr = _mm256_abs_epi16( _mm256_sub_epi16( r8, _mm256_set1_epi16( possibleColors[0][R] ) ) );
-
-        // luma-based error calculations
-        static const __m256i bWeight = _mm256_set1_epi16( 14 );
-        static const __m256i gWeight = _mm256_set1_epi16( 76 );
-        static const __m256i rWeight = _mm256_set1_epi16( 38 );
 
         diffb = _mm256_mullo_epi16( diffb, bWeight );
         diffg = _mm256_mullo_epi16( diffg, gWeight );
@@ -2267,7 +2401,7 @@ uint32_t calculateErrorTH( bool tMode, uint8_t* src, uint8_t( colorsRGB444 )[2][
 
 // main T-/H-mode compression function
 #ifdef __AVX2__
-uint32_t compressBlockTH( uint8_t* src, Luma& l, uint32_t& compressed1, uint32_t& compressed2, bool& tMode, __m128i r8, __m128i g8, __m128i b8 )
+uint32_t compressBlockTH( uint8_t* src, Luma& l, uint32_t& compressed1, uint32_t& compressed2, bool& tMode, __m128i r8, __m128i g8, __m128i b8, bool longestBGR = false, bool hq_mode = false)
 #else
 uint32_t compressBlockTH( uint8_t *src, Luma& l, uint32_t& compressed1, uint32_t& compressed2, bool &tMode )
 #endif
@@ -2283,6 +2417,18 @@ uint32_t compressBlockTH( uint8_t *src, Luma& l, uint32_t& compressed1, uint32_t
 #endif
 
     uint8_t pixIdx[16] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+    
+    uint8_t maxBgrCh = 0;
+    maxBgrCh = l.maxBgrCh;
+    if (longestBGR && hq_mode)
+    {
+        if (l.maxBgrRange < 255 * ecmd_threshold[1])
+            return MaxError;
+
+        if (maxBgrCh == R) _mm_storeu_si128((__m128i*)luma, r8);
+        else if (maxBgrCh == G) _mm_storeu_si128((__m128i*)luma, g8);
+        else _mm_storeu_si128((__m128i*)luma, b8);
+    }
 
     // 1) sorts the pairs of (luma, pix_idx)
     insertionSort( luma, pixIdx );
@@ -2320,7 +2466,12 @@ uint32_t compressBlockTH( uint8_t *src, Luma& l, uint32_t& compressed1, uint32_t
     bool swap = false;
     if( lRange >= rRange )
     {
-        if( lRange >= rRange * 2 )
+        // Force the T-mode if the number of pixels in the smaller cluster is less than four
+        bool condition = lRange >= rRange * 2;
+        if (hq_mode)
+            condition = (condition && minSumRangeIdx >= 2) || minSumRangeIdx >= 12;
+
+        if (condition)
         {
             swap = true;
             tMode = true;
@@ -2328,7 +2479,13 @@ uint32_t compressBlockTH( uint8_t *src, Luma& l, uint32_t& compressed1, uint32_t
     }
     else
     {
-        if( lRange * 2 <= rRange ) tMode = true;
+        // Force the T-mode if the number of pixels in the smaller cluster is less than four
+        bool condition = lRange * 2 <= rRange;
+        if (hq_mode)
+            condition = (condition && minSumRangeIdx < 13) || minSumRangeIdx < 3;
+
+        if (condition)
+            tMode = true;
     }
     // 4) calculates the two base colors
     uint8_t rangeIdx[4] = { pixIdx[0], pixIdx[minSumRangeIdx], pixIdx[minSumRangeIdx + 1], pixIdx[15] };
@@ -2342,12 +2499,58 @@ uint32_t compressBlockTH( uint8_t *src, Luma& l, uint32_t& compressed1, uint32_t
         r[i] = src[idx + 2];
     }
 
+    // Vertex-weighted base-color calculation
+    uint8_t num_zero_added = 0;
+    uint8_t num_two_added = 0;
+    uint16_t r1[4], g1[4], b1[4];
+
+    if (hq_mode)
+    {
+        // Set the new r1, g1, b1 values (16 bits x 3) from old rgb values (8 bits x 3)
+        for (int i = 0; i < 4; i++)
+        {
+            r1[i] = r[i];
+            g1[i] = g[i];
+            b1[i] = b[i];
+        }
+        for (uint8_t i = 0; i <= minSumRangeIdx; ++i)
+        {
+            if (pixIdx[i] == 0 || pixIdx[i] == 3 || pixIdx[i] == 12 || pixIdx[i] == 15)
+            {
+                b[0] += src[pixIdx[i] * 4 + B];
+                g[0] += src[pixIdx[i] * 4 + G];
+                r[0] += src[pixIdx[i] * 4 + R];
+                num_zero_added++;
+            }
+        }
+        for (uint8_t i = minSumRangeIdx + 1; i < 16; ++i)
+        {
+            if (pixIdx[i] == 0 || pixIdx[i] == 3 || pixIdx[i] == 12 || pixIdx[i] == 15)
+            {
+                b[2] += src[pixIdx[i] * 4 + B];
+                g[2] += src[pixIdx[i] * 4 + G];
+                r[2] += src[pixIdx[i] * 4 + R];
+                num_two_added++;
+            }
+        }
+    }
+
     uint8_t mid_rgb[2][3];
     if( swap )
     {
-        mid_rgb[1][B] = ( b[0] + b[1] ) / 2;
-        mid_rgb[1][G] = ( g[0] + g[1] ) / 2;
-        mid_rgb[1][R] = ( r[0] + r[1] ) / 2;
+        if (hq_mode)
+        {
+            uint8_t frac = 2 + num_zero_added;
+            mid_rgb[1][B] = (b[0] + b[1]) / frac;
+            mid_rgb[1][G] = (g[0] + g[1]) / frac;
+            mid_rgb[1][R] = (r[0] + r[1]) / frac;
+        }
+        else
+        {
+            mid_rgb[1][B] = (b[0] + b[1]) / 2;
+            mid_rgb[1][G] = (g[0] + g[1]) / 2;
+            mid_rgb[1][R] = (r[0] + r[1]) / 2;
+        }
 
         uint16_t sum_rgb[3] = { 0, 0, 0 };
         for( uint8_t i = minSumRangeIdx + 1; i < 16; i++ )
@@ -2364,9 +2567,20 @@ uint32_t compressBlockTH( uint8_t *src, Luma& l, uint32_t& compressed1, uint32_t
     }
     else
     {
-        mid_rgb[0][B] = (b[0] + b[1]) / 2;
-        mid_rgb[0][G] = (g[0] + g[1]) / 2;
-        mid_rgb[0][R] = (r[0] + r[1]) / 2;
+        if (hq_mode)
+        {
+            uint8_t frac = 2 + num_zero_added;
+            mid_rgb[0][B] = (b[0] + b[1]) / frac;
+            mid_rgb[0][G] = (g[0] + g[1]) / frac;
+            mid_rgb[0][R] = (r[0] + r[1]) / frac;
+        }
+        else
+        {
+            mid_rgb[0][B] = (b[0] + b[1]) / 2;
+            mid_rgb[0][G] = (g[0] + g[1]) / 2;
+            mid_rgb[0][R] = (r[0] + r[1]) / 2;
+        }
+
         if( tMode )
         {
             uint16_t sum_rgb[3] = { 0, 0, 0 };
@@ -2384,29 +2598,87 @@ uint32_t compressBlockTH( uint8_t *src, Luma& l, uint32_t& compressed1, uint32_t
         }
         else
         {
-            mid_rgb[1][B] = (b[2] + b[3]) / 2;
-            mid_rgb[1][G] = (g[2] + g[3]) / 2;
-            mid_rgb[1][R] = (r[2] + r[3]) / 2;
+            if (hq_mode)
+            {
+                uint8_t frac = 2 + num_two_added;
+                mid_rgb[1][B] = (b[2] + b[3]) / frac;
+                mid_rgb[1][G] = (g[2] + g[3]) / frac;
+                mid_rgb[1][R] = (r[2] + r[3]) / frac;
+            }
+            else
+            {
+                mid_rgb[1][B] = (b[2] + b[3]) / 2;
+                mid_rgb[1][G] = (g[2] + g[3]) / 2;
+                mid_rgb[1][R] = (r[2] + r[3]) / 2;
+            }
+        }
+    }
+    // Restore the values of the rgb variables
+    if (hq_mode)
+    {
+        for (int i = 0; i < 4; i++)
+        {
+            r[i] = r1[i];
+            g[i] = g1[i];
+            b[i] = b1[i];
         }
     }
 
     // 5) sets the start distance index
-    uint32_t startDistCandidate;
+    uint32_t startDistCandidate; // int? 
     uint32_t avgDist;
-    if( tMode )
+
+    // Use the longest BGR values
+    if (hq_mode && longestBGR)
     {
-        if( swap )
+        if (tMode)
         {
-            avgDist = ( b[1] - b[0] + g[1] - g[0] + r[1] - r[0] ) / 6;
+            if (swap)
+            {
+                if (maxBgrCh == R)
+                    avgDist = (r[1] - r[0]) / 2;
+                else if (maxBgrCh == G)
+                    avgDist = (g[1] - g[0]) / 2;
+                else
+                    avgDist = (b[1] - b[0]) / 2;
+            }
+            else
+            {
+                if (maxBgrCh == R)
+                    avgDist = (r[3] - r[2]) / 2;
+                else if (maxBgrCh == G)
+                    avgDist = (g[3] - g[2]) / 2;
+                else
+                    avgDist = (b[3] - b[2]) / 2;
+            }
         }
         else
         {
-            avgDist = ( b[3] - b[2] + g[3] - g[2] + r[3] - r[2] ) / 6;
+            if (maxBgrCh == R)
+                avgDist = (r[1] - r[0] + r[3] - r[2]) / 4;
+            else if (maxBgrCh == G)
+                avgDist = (g[1] - g[0] + g[3] - g[2]) / 4;
+            else
+                avgDist = (b[1] - b[0] + b[3] - b[2]) / 4;
         }
     }
     else
     {
-        avgDist = ( b[1] - b[0] + g[1] - g[0] + r[1] - r[0] + b[3] - b[2] + g[3] - g[2] + r[3] - r[2] ) / 12;
+        if (tMode)
+        {
+            if (swap)
+            {
+                avgDist = (b[1] - b[0] + g[1] - g[0] + r[1] - r[0]) / 6;
+            }
+            else
+            {
+                avgDist = (b[3] - b[2] + g[3] - g[2] + r[3] - r[2]) / 6;
+            }
+        }
+        else
+        {
+            avgDist = (b[1] - b[0] + g[1] - g[0] + r[1] - r[0] + b[3] - b[2] + g[3] - g[2] + r[3] - r[2]) / 12;
+        }
     }
 
     if( avgDist <= 16)
@@ -2430,6 +2702,13 @@ uint32_t compressBlockTH( uint8_t *src, Luma& l, uint32_t& compressed1, uint32_t
         startDistCandidate = 4;
     }
 
+    // More conservative start distance index (-2)
+    if (hq_mode && (!tMode || longestBGR))
+    {
+        startDistCandidate -= 2;
+        if (startDistCandidate < 0) startDistCandidate = 0;
+    }
+
     uint32_t bestErr = MaxError;
     uint32_t bestPixIndices;
     uint8_t bestDist = 10;
@@ -2440,7 +2719,7 @@ uint32_t compressBlockTH( uint8_t *src, Luma& l, uint32_t& compressed1, uint32_t
     // 6) finds the best candidate with the lowest error
 #ifdef __AVX2__
     // Vectorized ver
-    bestErr = calculateErrorTH( tMode, colorsRGB444, bestDist, bestPixIndices, startDistCandidate, r8, g8, b8 );
+    bestErr = calculateErrorTH( tMode, colorsRGB444, bestDist, bestPixIndices, startDistCandidate, r8, g8, b8, l.bgrWeight, hq_mode );
 #else
     // Scalar ver
     bestErr = calculateErrorTH( tMode, src, colorsRGB444, bestDist, bestPixIndices, startDistCandidate );
@@ -2517,7 +2796,7 @@ static etcpak_force_inline uint64_t EncodeSelectors( uint64_t d, const T terr[2]
 static etcpak_force_inline uint64_t ProcessRGB( const uint8_t* src )
 {
 #ifdef __AVX2__
-    uint64_t d = CheckSolid_AVX2( src );
+    uint64_t d = CheckSolid_AVX2( src, false);
     if( d != 0 ) return d;
 
     alignas(32) v4i a[8];
@@ -2544,11 +2823,13 @@ static etcpak_force_inline uint64_t ProcessRGB( const uint8_t* src )
 
     if ((idx == 0) || (idx == 2))
     {
-        FindBestFit_4x2_AVX2( terr, tsel, a, idx * 2, src );
+        uint8_t bgrWeight[3] = { 14, 76, 38 };
+        FindBestFit_4x2_AVX2( terr, tsel, a, idx * 2, src , bgrWeight, false);
     }
     else
     {
-        FindBestFit_2x4_AVX2( terr, tsel, a, idx * 2, src );
+        uint8_t bgrWeight[3] = { 14, 76, 38 };
+        FindBestFit_2x4_AVX2( terr, tsel, a, idx * 2, src, bgrWeight, false);
     }
 
     return EncodeSelectors_AVX2( d, terr, tsel, (idx % 2) == 1 );
@@ -2870,15 +3151,25 @@ static etcpak_force_inline Channels GetChannels( const uint8_t* src )
 #endif
 
 #if defined __AVX2__ || (defined __ARM_NEON && defined __aarch64__)
-static etcpak_force_inline void CalculateLuma( Channels& ch, Luma& luma )
+static etcpak_force_inline void CalculateLuma( Channels& ch, Luma& luma, const bool hqMode )
 #else
 static etcpak_force_inline void CalculateLuma( const uint8_t* src, Luma& luma )
 #endif
 {
 #ifdef __AVX2__
-    __m256i b16_luma = _mm256_mullo_epi16( _mm256_cvtepu8_epi16( ch.b8 ), _mm256_set1_epi16( 14 ) );
-    __m256i g16_luma = _mm256_mullo_epi16( _mm256_cvtepu8_epi16( ch.g8 ), _mm256_set1_epi16( 76 ) );
-    __m256i r16_luma = _mm256_mullo_epi16( _mm256_cvtepu8_epi16( ch.r8 ), _mm256_set1_epi16( 38 ) );
+    __m256i b16_luma, g16_luma, r16_luma;
+    if (hqMode)
+    {
+        b16_luma = _mm256_mullo_epi16(_mm256_cvtepu8_epi16(ch.b8), _mm256_set1_epi16(luma.bgrWeight[B]));
+        g16_luma = _mm256_mullo_epi16(_mm256_cvtepu8_epi16(ch.g8), _mm256_set1_epi16(luma.bgrWeight[G]));
+        r16_luma = _mm256_mullo_epi16(_mm256_cvtepu8_epi16(ch.r8), _mm256_set1_epi16(luma.bgrWeight[R]));
+    }
+    else
+    {
+        b16_luma = _mm256_mullo_epi16( _mm256_cvtepu8_epi16( ch.b8 ), _mm256_set1_epi16( 14 ) );
+        g16_luma = _mm256_mullo_epi16( _mm256_cvtepu8_epi16( ch.g8 ), _mm256_set1_epi16( 76 ) );
+        r16_luma = _mm256_mullo_epi16( _mm256_cvtepu8_epi16( ch.r8 ), _mm256_set1_epi16( 38 ) );
+    }
 
     __m256i luma_16bit = _mm256_add_epi16( _mm256_add_epi16( g16_luma, r16_luma ), b16_luma );
     __m256i luma_8bit_m256i = _mm256_srli_epi16( luma_16bit, 7 );
@@ -2981,11 +3272,56 @@ static etcpak_force_inline uint8_t SelectModeETC2( const Luma& luma )
     return ModeUndecided;
 }
 
-static etcpak_force_inline uint64_t ProcessRGB_ETC2( const uint8_t* src, bool useHeuristics )
+// Per-block bgrWeight calculation
+#ifdef __AVX2__
+inline uint32_t _mm_sum_epu8(const __m128i v)
+{
+    __m128i vsum = _mm_sad_epu8(v, _mm_setzero_si128());
+    return _mm_cvtsi128_si32(vsum) + _mm_extract_epi16(vsum, 4);
+}
+
+static etcpak_force_inline void CalculateBGRWeight(Channels& ch, Luma& luma)
+{
+    uint8_t bgrMin[3] = { 255, 255, 255 };
+    uint8_t bgrMax[3] = { 0, 0 ,0 };
+    uint32_t totalBgr[3] = { 0, 0, 0 }, sumOfTotalBgr = 0;
+    float bgrRange[3], totalBgrRange = 0;
+
+    uint8_t idx;
+
+    bgrRange[B] = hMax(ch.b8, idx) - hMin(ch.b8, idx);
+    bgrRange[G] = hMax(ch.g8, idx) - hMin(ch.g8, idx);
+    bgrRange[R] = hMax(ch.r8, idx) - hMin(ch.r8, idx);
+    luma.maxBgrCh = (bgrRange[B] < bgrRange[G]) ?
+        ((bgrRange[G] < bgrRange[R]) ? R : G) :
+        ((bgrRange[B] < bgrRange[R]) ? R : B);
+    luma.maxBgrRange = bgrRange[luma.maxBgrCh];
+    totalBgr[B] = _mm_sum_epu8(ch.b8);
+    totalBgr[G] = _mm_sum_epu8(ch.g8);
+    totalBgr[R] = _mm_sum_epu8(ch.r8);
+    sumOfTotalBgr = totalBgr[0] + totalBgr[1] + totalBgr[2];
+    if ((bgrRange[B] > 23) && (totalBgr[B] > sumOfTotalBgr * 2 / 3))
+    {
+        luma.bgrWeight[B] = ((totalBgr[B] * 128 / sumOfTotalBgr) + 14) >> 1;
+        luma.bgrWeight[G] = ((totalBgr[G] * 128 / sumOfTotalBgr) + 76) >> 1;
+        luma.bgrWeight[R] = ((totalBgr[R] * 128 / sumOfTotalBgr) + 38) >> 1;
+    }
+    else if ((bgrRange[R] > 23) && (totalBgr[R] > sumOfTotalBgr * 2 / 3))
+    {
+        luma.bgrWeight[B] = ((totalBgr[B] * 128 / sumOfTotalBgr) + 14) >> 1;
+        luma.bgrWeight[G] = ((totalBgr[G] * 128 / sumOfTotalBgr) + 76) >> 1;
+        luma.bgrWeight[R] = ((totalBgr[R] * 128 / sumOfTotalBgr) + 38) >> 1;
+    }
+}
+#endif 
+
+static etcpak_force_inline uint64_t ProcessRGB_ETC2( const uint8_t* src, int useHeuristicsMode )
 {
 #ifdef __AVX2__
-    uint64_t d = CheckSolid_AVX2( src );
-    if( d != 0 ) return d;
+    bool hqMode = useHeuristicsMode == 2;
+
+    uint64_t d = CheckSolid_AVX2(src, hqMode);
+    if (useHeuristicsMode != 2 && d != 0) return d;
 #else
     uint64_t d = CheckSolid( src );
     if (d != 0) return d;
@@ -2993,16 +3329,33 @@ static etcpak_force_inline uint64_t ProcessRGB_ETC2( const uint8_t* src, bool us
 
     uint8_t mode = ModeUndecided;
     Luma luma;
-#ifdef __AVX2__
-    Channels ch = GetChannels( src );
-    if( useHeuristics )
+    if (hqMode)
     {
-        CalculateLuma( ch, luma );
-        mode = SelectModeETC2( luma );
+        // Solid blocks are set to ModePlanar
+        if (d != 0 && hqMode)
+            mode = ModePlanar;
+
+        luma.bgrWeight[B] = 14;
+        luma.bgrWeight[G] = 76;
+        luma.bgrWeight[R] = 38;
     }
 
-    auto plane = Planar_AVX2( ch, mode, useHeuristics );
-    if( useHeuristics && mode == ModePlanar ) return plane.plane;
+#ifdef __AVX2__
+    Channels ch = GetChannels( src );
+    if( useHeuristicsMode > 0 )
+    {
+        if (hqMode)
+        {
+            CalculateBGRWeight(ch, luma);
+        }
+
+        CalculateLuma( ch, luma, hqMode);
+        if (mode != ModePlanar)
+            mode = SelectModeETC2( luma );
+    }
+
+    auto plane = Planar_AVX2( ch, mode, useHeuristicsMode, luma.bgrWeight );
+    if( useHeuristicsMode && mode == ModePlanar ) return plane.plane;
 
     alignas( 32 ) v4i a[8];
     __m128i err0 = PrepareAverages_AVX2( a, plane.sum4 );
@@ -3027,23 +3380,23 @@ static etcpak_force_inline uint64_t ProcessRGB_ETC2( const uint8_t* src, bool us
 
     if ((idx == 0) || (idx == 2))
     {
-        FindBestFit_4x2_AVX2( terr, tsel, a, idx * 2, src );
+        FindBestFit_4x2_AVX2( terr, tsel, a, idx * 2, src, luma.bgrWeight, hqMode);
     }
     else
     {
-        FindBestFit_2x4_AVX2( terr, tsel, a, idx * 2, src );
+        FindBestFit_2x4_AVX2( terr, tsel, a, idx * 2, src, luma.bgrWeight, hqMode );
     }
 
-    if( useHeuristics )
+    if( useHeuristicsMode )
     {
-        if( mode == ModeTH )
+        if ((mode == ModeTH || ((idx & 0x2) == 0 && hqMode)))
         {
             uint64_t result = 0;
             uint64_t error = 0;
             uint32_t compressed[4] = { 0, 0, 0, 0 };
             bool tMode = false;
 
-            error = compressBlockTH( (uint8_t*)src, luma, compressed[0], compressed[1], tMode, ch.r8, ch.g8, ch.b8 );
+            error = compressBlockTH( (uint8_t*)src, luma, compressed[0], compressed[1], tMode, ch.r8, ch.g8, ch.b8, ((idx & 0x2) == 0) && mode != ModeTH, hqMode);
             if( tMode )
             {
                 stuff59bits( compressed[0], compressed[1], compressed[2], compressed[3] );
@@ -3058,6 +3411,14 @@ static etcpak_force_inline uint64_t ProcessRGB_ETC2( const uint8_t* src, bool us
 
             plane.plane = result;
             plane.error = error;
+
+            // Second planar pass; error calculations are needed
+            if (hqMode)
+            {
+                auto plane2 = Planar_AVX2(ch, mode, 2, luma.bgrWeight);
+                if (plane2.error < plane.error)
+                    plane = plane2;
+            }
         }
         else
         {
@@ -3066,7 +3427,13 @@ static etcpak_force_inline uint64_t ProcessRGB_ETC2( const uint8_t* src, bool us
         }
     }
 
-    return EncodeSelectors_AVX2( d, terr, tsel, ( idx % 2 ) == 1, plane.plane, plane.error );
+    // Addiitional error correction can be performed for fair comparisons between ETC1 & ETC2 blocks
+    auto id = g_id[idx];
+    bool correctColor = false;
+    if (hqMode)
+        correctColor = ((mode == ModeTH) || ((idx & 0x2) == 0));
+
+    return EncodeSelectors_AVX2(d, terr, tsel, (idx % 2) == 1, plane.plane, plane.error, a, id, src, luma.bgrWeight, correctColor, hqMode);
 #else
     if( useHeuristics )
     {
@@ -3952,7 +4319,8 @@ void CompressEtc1RgbDither( const uint32_t* src, uint64_t* dst, uint32_t blocks,
     while( --blocks );
 }
 
-void CompressEtc2Rgb( const uint32_t* src, uint64_t* dst, uint32_t blocks, size_t width, bool useHeuristics )
+// edit
+void CompressEtc2Rgb( const uint32_t* src, uint64_t* dst, uint32_t blocks, size_t width, int useHeuristicsMode )
 {
     int w = 0;
     uint32_t buf[4*4];
@@ -3991,12 +4359,12 @@ void CompressEtc2Rgb( const uint32_t* src, uint64_t* dst, uint32_t blocks, size_
             src += width * 3;
             w = 0;
         }
-        *dst++ = ProcessRGB_ETC2( (uint8_t*)buf, useHeuristics );
+        *dst++ = ProcessRGB_ETC2( (uint8_t*)buf, useHeuristicsMode );
     }
     while( --blocks );
 }
 
-void CompressEtc2Rgba( const uint32_t* src, uint64_t* dst, uint32_t blocks, size_t width, bool useHeuristics )
+void CompressEtc2Rgba( const uint32_t* src, uint64_t* dst, uint32_t blocks, size_t width, int useHeuristicsMode )
 {
     int w = 0;
     uint32_t rgba[4*4];
@@ -4064,7 +4432,7 @@ void CompressEtc2Rgba( const uint32_t* src, uint64_t* dst, uint32_t blocks, size
             w = 0;
         }
         *dst++ = ProcessAlpha_ETC2<true>( alpha );
-        *dst++ = ProcessRGB_ETC2( (uint8_t*)rgba, useHeuristics );
+        *dst++ = ProcessRGB_ETC2( (uint8_t*)rgba, useHeuristicsMode );
     }
     while( --blocks );
 }
