@@ -45,6 +45,7 @@ void Usage()
     fprintf( stderr, "  -h header              use specified header for output file (defaults to pvr)\n" );
     fprintf( stderr, "                         [pvr, dds]\n" );
     fprintf( stderr, "  --disable-heuristics   disable heuristic selector of compression mode\n" );
+    fprintf( stderr, "  --etc2_hq              QuickETC2-HQ mode \n");
     fprintf( stderr, "  --linear               input data is in linear space (disable sRGB conversion for mips)\n\n" );
     fprintf( stderr, "Output file name may be unneeded for some modes.\n" );
 }
@@ -62,7 +63,7 @@ int main( int argc, char** argv )
     bool mipmap = false;
     bool dither = false;
     bool linearize = true;
-    bool useHeuristics = true;
+    int useHeuristicsMode = 1; // | no heuristic mode 0 | use heuristic mode 1 | use heuristic HQ mode 2 | 
     auto codec = CodecType::Etc2_RGB;
     auto header = BlockData::Format::Pvr;
     unsigned int cpus = System::CPUCores();
@@ -76,12 +77,14 @@ int main( int argc, char** argv )
     enum Options
     {
         OptLinear,
-        OptNoHeuristics
+        OptNoHeuristics,
+        OptHq
     };
 
     struct option longopts[] = {
         { "linear", no_argument, nullptr, OptLinear },
         { "disable-heuristics", no_argument, nullptr, OptNoHeuristics },
+        { "etc2_hq", no_argument, nullptr, OptHq},
         {}
     };
 
@@ -141,12 +144,16 @@ int main( int argc, char** argv )
             linearize = false;
             break;
         case OptNoHeuristics:
-            useHeuristics = false;
+            useHeuristicsMode = 0;
+            break;
+        case OptHq:
+            useHeuristicsMode = 2;
             break;
         default:
             break;
         }
     }
+    printf("Mode = %d\n", useHeuristicsMode);
 
     const char* input = nullptr;
     const char* output = nullptr;
@@ -229,8 +236,8 @@ int main( int argc, char** argv )
                         for( int j=0; j<parts; j++ )
                         {
                             const auto lines = std::min( 32, linesLeft );
-                            taskDispatch.Queue( [bd, ptr, width, lines, offset, useHeuristics, &bc7params] {
-                                bd->ProcessRGBA( ptr, width * lines / 4, offset, width, useHeuristics, &bc7params );
+                            taskDispatch.Queue( [bd, ptr, width, lines, offset, useHeuristicsMode, &bc7params] {
+                                bd->ProcessRGBA( ptr, width * lines / 4, offset, width, useHeuristicsMode, &bc7params );
                             } );
                             linesLeft -= lines;
                             ptr += width * lines;
@@ -242,8 +249,8 @@ int main( int argc, char** argv )
                         for( int j=0; j<parts; j++ )
                         {
                             const auto lines = std::min( 32, linesLeft );
-                            taskDispatch.Queue( [bd, ptr, width, lines, offset, dither, useHeuristics] {
-                                bd->Process( ptr, width * lines / 4, offset, width, dither, useHeuristics );
+                            taskDispatch.Queue( [bd, ptr, width, lines, offset, dither, useHeuristicsMode] {
+                                bd->Process( ptr, width * lines / 4, offset, width, dither, useHeuristicsMode);
                             } );
                             linesLeft -= lines;
                             ptr += width * lines;
@@ -263,11 +270,11 @@ int main( int argc, char** argv )
                     const auto localStart = GetTime();
                     if( rgba )
                     {
-                        bd->ProcessRGBA( bmp->Data(), bmp->Size().x * bmp->Size().y / 16, 0, bmp->Size().x, useHeuristics, &bc7params );
+                        bd->ProcessRGBA( bmp->Data(), bmp->Size().x * bmp->Size().y / 16, 0, bmp->Size().x, useHeuristicsMode, &bc7params );
                     }
                     else
                     {
-                        bd->Process( bmp->Data(), bmp->Size().x * bmp->Size().y / 16, 0, bmp->Size().x, dither, useHeuristics );
+                        bd->Process( bmp->Data(), bmp->Size().x * bmp->Size().y / 16, 0, bmp->Size().x, dither, useHeuristicsMode);
                     }
                     const auto localEnd = GetTime();
                     timeData[i] = localEnd - localStart;
@@ -306,16 +313,16 @@ int main( int argc, char** argv )
 
             if( rgba )
             {
-                TaskDispatch::Queue( [part, &bd, useHeuristics, &bc7params]()
+                TaskDispatch::Queue( [part, &bd, useHeuristicsMode, &bc7params]()
                 {
-                    bd->ProcessRGBA( part.src, part.width / 4 * part.lines, part.offset, part.width, useHeuristics, &bc7params );
+                    bd->ProcessRGBA( part.src, part.width / 4 * part.lines, part.offset, part.width, useHeuristicsMode, &bc7params );
                 } );
             }
             else
             {
-                TaskDispatch::Queue( [part, &bd, &dither, useHeuristics]()
+                TaskDispatch::Queue( [part, &bd, &dither, useHeuristicsMode]()
                 {
-                    bd->Process( part.src, part.width / 4 * part.lines, part.offset, part.width, dither, useHeuristics );
+                    bd->Process( part.src, part.width / 4 * part.lines, part.offset, part.width, dither, useHeuristicsMode);
                 } );
             }
         }
