@@ -202,8 +202,8 @@ static int AdjustSizeForMipmaps( const v2i& size, int levels )
     for( int i=1; i<levels; i++ )
     {
         assert( current.x != 1 || current.y != 1 );
-        current.x = std::max( 1, current.x / 2 );
-        current.y = std::max( 1, current.y / 2 );
+        current.x = max( 1, current.x / 2 );
+        current.y = max( 1, current.y / 2 );
         len += ( ( current.x + 3 ) & ~3 ) * ( ( current.y + 3 ) & ~3 ) / 2;
     }
     assert( current.x == 1 && current.y == 1 );

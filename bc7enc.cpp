@@ -1879,7 +1879,7 @@ static uint64_t find_optimal_solution(uint32_t mode, vec4F xl, vec4F xh, const c
 			{
 				float x = 0.0f;
 				for (uint32_t c = 0; c < 3; c++)
-					x = std::max(std::max(x, xl.m_c[c]), xh.m_c[c]);
+					x = max(max(x, xl.m_c[c]), xh.m_c[c]);
 				
 				int p = 0;
 				if (x > (253.0f / 255.0f))
@@ -4066,7 +4066,7 @@ static inline float compute_block_max_std_dev(const color_rgba* pPixels)
 		a_stats.update(pPixels[i].m_c[3]);
 	}
 
-	return std::max<float>(std::max<float>(std::max(r_stats.get_std_dev(), g_stats.get_std_dev()), b_stats.get_std_dev()), a_stats.get_std_dev());
+	return max(max(max(r_stats.get_std_dev(), g_stats.get_std_dev()), b_stats.get_std_dev()), a_stats.get_std_dev());
 }
 
 struct bc7_block

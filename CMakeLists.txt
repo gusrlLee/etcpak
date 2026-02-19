@@ -40,6 +40,7 @@ CPMAddPackage(
 )
 
 pkg_check_modules(PNG REQUIRED libpng)
+find_package(PNG REQUIRED)
 
 include_directories(${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_LIST_DIR}/src)
 
@@ -76,7 +77,10 @@ set(SOURCES
     TaskDispatch.cpp
     TextureHeader.cpp
     Timing.cpp
+    getopt/getopt.h
+    getopt/getopt.c
 )
 
 add_executable(etcpak ${SOURCES})
-target_link_libraries(etcpak Tracy::TracyClient ${PNG_LIBRARIES})
+target_link_libraries(etcpak Tracy::TracyClient)
+target_link_libraries(etcpak PNG::PNG)

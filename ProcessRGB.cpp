@@ -1754,13 +1754,13 @@ static etcpak_force_inline void FindBestFit( uint32_t terr[2][8], uint16_t tsel[
 
 static etcpak_force_inline uint8_t convert6(float f)
 {
-    int i = (std::min(std::max(static_cast<int>(f), 0), 1023) - 15) >> 1;
+    int i = (min(max(static_cast<int>(f), 0), 1023) - 15) >> 1;
     return (i + 11 - ((i + 11) >> 7) - ((i + 4) >> 7)) >> 3;
 }
 
 static etcpak_force_inline uint8_t convert7(float f)
 {
-    int i = (std::min(std::max(static_cast<int>(f), 0), 1023) - 15) >> 1;
+    int i = (min(max(static_cast<int>(f), 0), 1023) - 15) >> 1;
     return (i + 9 - ((i + 9) >> 8) - ((i + 6) >> 8)) >> 2;
 }
 
@@ -3797,7 +3797,7 @@ static etcpak_force_inline uint64_t ProcessAlpha_ETC2( const uint8_t* src )
     int srcMid = min + srcRange / 2;
 
     uint8_t buf[16][16];
-    int err = std::numeric_limits<int>::max();
+    int err = INT_MAX;
     int sel;
     int selmul;
     for( int r=0; r<16; r++ )
