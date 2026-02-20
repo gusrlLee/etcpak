@@ -40,6 +40,7 @@ void Usage()
     fprintf( stderr, "  -M                     switch benchmark to multi-threaded mode\n" );
     fprintf( stderr, "  -m                     generate mipmaps\n" );
     fprintf( stderr, "  -d                     enable dithering\n" );
+    fprintf( stderr, "  -t threads             number of threads that will be used\n");
     fprintf( stderr, "  -c codec               use specified codec (defaults to etc2_rgb)\n" );
     fprintf( stderr, "                         [etc1, etc2_r, etc2_rg, etc2_rgb, etc2_rgba, bc1, bc3, bc4, bc5, bc7]\n" );
     fprintf( stderr, "  -h header              use specified header for output file (defaults to pvr)\n" );
@@ -89,7 +90,7 @@ int main( int argc, char** argv )
     };
 
     int c;
-    while( ( c = getopt_long( argc, argv, "vsbMmdc:h:", longopts, nullptr ) ) != -1 )
+    while( ( c = getopt_long( argc, argv, "vsbMmdc:h:t:", longopts, nullptr ) ) != -1 )
     {
         switch( c )
         {
@@ -113,6 +114,9 @@ int main( int argc, char** argv )
             break;
         case 'd':
             dither = true;
+            break;
+        case 't':
+            cpus = atoi(optarg) > System::CPUCores() ? System::CPUCores() : atoi(optarg);
             break;
         case 'c':
             if( strcmp( optarg, "etc1" ) == 0 ) codec = CodecType::Etc1;
@@ -154,6 +158,7 @@ int main( int argc, char** argv )
         }
     }
     printf("Mode = %d\n", useHeuristicsMode);
+    printf("Used Thread = %d\n", cpus);
 
     const char* input = nullptr;
     const char* output = nullptr;
