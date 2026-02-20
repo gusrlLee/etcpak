@@ -50,7 +50,7 @@ struct Luma
     float max, min;
     uint8_t minIdx = 255, maxIdx = 255;
     __m128i luma8;
-    // quicketc2_hq
+    // etc2_hq
     uint8_t bgrWeight[3];  // new weigths for b,g,r channels
     uint8_t maxBgrCh;      // channel which has the max bgr range (0, 1 or 2)
     uint8_t maxBgrRange; // max bgr range (0~255)
@@ -276,7 +276,7 @@ static etcpak_force_inline unsigned long _bit_scan_forward( unsigned long mask )
 
 typedef std::array<uint16_t, 4> v4i;
 
-// quicketc2_hq
+// etc2_hq
 // Modified FindBestFit function for using per-block bgrWeight and the common error calculation criteria
 static etcpak_force_inline void FindBestFit2(uint64_t& terr, const uint32_t tsel[8], size_t t[2], v4i a[8], const uint32_t* id, const uint8_t* data, bool rotate, const uint8_t* bgrWeight)
 {
@@ -443,7 +443,7 @@ static etcpak_force_inline uint64_t EncodeAverages_AVX2( const v4i a[8], size_t 
     return d;
 }
 
-static etcpak_force_inline uint64_t CheckSolid_AVX2( const uint8_t* src, bool hqMode) noexcept
+static etcpak_force_inline uint64_t CheckSolid_AVX2( const uint8_t* src, bool hqMode = false) noexcept
 {
     __m256i d0 = _mm256_loadu_si256(((__m256i*)src) + 0);
     __m256i d1 = _mm256_loadu_si256(((__m256i*)src) + 1);
@@ -460,6 +460,8 @@ static etcpak_force_inline uint64_t CheckSolid_AVX2( const uint8_t* src, bool hq
         return 0;
     }
 
+    // etc2_hq
+    // Forcing the ETC1 mode for the solid block is disabled to use the Planar mode instead
     if (hqMode)
         return 1;
 
@@ -485,10 +487,12 @@ static etcpak_force_inline __m128i PrepareAverages_AVX2( v4i a[8], const __m256i
     return CalcErrorBlock_AVX2( sum4, a);
 }
 
-static etcpak_force_inline void FindBestFit_4x2_AVX2(uint32_t terr[2][8], uint32_t tsel[8], v4i a[8], const uint32_t offset, const uint8_t* data, const uint8_t* bgrWeight, const bool hqMode) noexcept
+// etc2_hq
+static etcpak_force_inline void FindBestFit_4x2_AVX2(uint32_t terr[2][8], uint32_t tsel[8], v4i a[8], const uint32_t offset, const uint8_t* data, const uint8_t* bgrWeight, const bool hqMode = false) noexcept
 {
     __m256i sel0 = _mm256_setzero_si256();
     __m256i sel1 = _mm256_setzero_si256();
+
     const uint8_t wr = bgrWeight[R], wg = bgrWeight[G], wb = bgrWeight[B];
 
     for (unsigned int j = 0; j < 2; ++j)
@@ -617,7 +621,8 @@ static etcpak_force_inline void FindBestFit_4x2_AVX2(uint32_t terr[2][8], uint32
     _mm256_store_si256((__m256i*)tsel, sel);
 }
 
-static etcpak_force_inline void FindBestFit_2x4_AVX2( uint32_t terr[2][8], uint32_t tsel[8], v4i a[8], const uint32_t offset, const uint8_t* data, uint8_t* bgrWeight, const bool hqMode) noexcept
+// etc2_hq
+static etcpak_force_inline void FindBestFit_2x4_AVX2( uint32_t terr[2][8], uint32_t tsel[8], v4i a[8], const uint32_t offset, const uint8_t* data, uint8_t* bgrWeight, const bool hqMode = false) noexcept
 {
     __m256i sel0 = _mm256_setzero_si256();
     __m256i sel1 = _mm256_setzero_si256();
@@ -866,6 +871,7 @@ static etcpak_force_inline Plane Planar_AVX2( const Channels& ch, uint8_t& mode,
     __m256i srb = _mm256_or_si256( sr1, sb0 );
     __m256i srgb = _mm256_or_si256( srb, sg1 );
 
+    // etc2_hq
     if( mode != ModePlanar && useHeuristicsMode == 1 )
     {
         Plane plane;
@@ -942,6 +948,7 @@ static etcpak_force_inline Plane Planar_AVX2( const Channels& ch, uint8_t& mode,
 
     // Error calculation
     uint64_t error = 0;
+    // etc2_hq
     if( useHeuristicsMode != 1 )
     {
         auto ro0 = ( rgbho >> 48 ) & 0x3F;
@@ -1020,6 +1027,7 @@ static etcpak_force_inline Plane Planar_AVX2( const Channels& ch, uint8_t& mode,
         __m256i gdif = _mm256_sub_epi16( g08, gp2 );
         __m256i bdif = _mm256_sub_epi16( b08, bp2 );
 
+        // etc2_hq
         __m256i rerr, gerr, berr;
         if (useHeuristicsMode == 2)
         {
@@ -1084,7 +1092,8 @@ static etcpak_force_inline Plane Planar_AVX2( const Channels& ch, uint8_t& mode,
     return plane;
 }
 
-static etcpak_force_inline uint64_t EncodeSelectors_AVX2( uint64_t d, const uint32_t terr[2][8], const uint32_t tsel[8], const bool rotate, const uint64_t value, const uint32_t error, v4i a[8], const uint32_t* id, const uint8_t* data, const uint8_t* bgrWeight, bool correctError, const bool hqMode) noexcept
+// etc2_hq
+static etcpak_force_inline uint64_t EncodeSelectors_AVX2( uint64_t d, const uint32_t terr[2][8], const uint32_t tsel[8], const bool rotate, const uint64_t value, const uint32_t error, v4i a[8], const uint32_t* id, const uint8_t* data, const uint8_t* bgrWeight, bool correctError, const bool hqMode = false) noexcept
 {
     size_t tidx[2];
 
@@ -1115,9 +1124,10 @@ static etcpak_force_inline uint64_t EncodeSelectors_AVX2( uint64_t d, const uint
     tidx[0] = _bit_scan_forward(mask0) >> 2;
     tidx[1] = _bit_scan_forward(mask1) >> 2;
 
+    // etc2_hq
+    uint64_t err = 0;
     if (hqMode)
     {
-        uint64_t err = 0;
         // Only if the current mode is T or H and the default bgrWeight is used, new error calculation fuction is called.
         if (correctError && bgrWeight[G] == 76 && error < MaxError)
             FindBestFit2(err, tsel, tidx, a, id, data, rotate, bgrWeight);
@@ -2198,9 +2208,9 @@ static etcpak_force_inline std::pair<uint64_t, uint64_t> Planar_NEON( const uint
 #endif
 
 
-// TODO: Check this point
+// etc2_hq
 #ifdef __AVX2__
-uint32_t calculateErrorTH( bool tMode, uint8_t( colorsRGB444 )[2][3], uint8_t& dist, uint32_t& pixIndices, uint8_t startDist, __m128i r8, __m128i g8, __m128i b8, const uint8_t* bgrWeight, const bool hqMode)
+uint32_t calculateErrorTH( bool tMode, uint8_t( colorsRGB444 )[2][3], uint8_t& dist, uint32_t& pixIndices, uint8_t startDist, __m128i r8, __m128i g8, __m128i b8, const uint8_t* bgrWeight, const bool hqMode = false)
 #else
 uint32_t calculateErrorTH( bool tMode, uint8_t* src, uint8_t( colorsRGB444 )[2][3], uint8_t& dist, uint32_t& pixIndices, uint8_t startDist )
 #endif
@@ -2217,6 +2227,7 @@ uint32_t calculateErrorTH( bool tMode, uint8_t* src, uint8_t( colorsRGB444 )[2][
     __m128i reverseMask = _mm_set_epi8( 0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15 );
 
     static const __m128i zero = _mm_setzero_si128();
+
     __m128i b8Rev, g8Rev, r8Rev, b8Lo, g8Lo, r8Lo, b8Hi, g8Hi, r8Hi;
     __m256i b8_256, g8_256, r8_256;
     __m256i bWeight, gWeight, rWeight;
@@ -2230,7 +2241,6 @@ uint32_t calculateErrorTH( bool tMode, uint8_t* src, uint8_t( colorsRGB444 )[2][
         r8Rev = _mm_shuffle_epi8(r8, reverseMask);
 
         // extends 3x128 bits RGB into 3x256 bits RGB for error comparisions
-        static const __m128i zero = _mm_setzero_si128();
         b8Lo = _mm_unpacklo_epi8(b8Rev, zero);
         g8Lo = _mm_unpacklo_epi8(g8Rev, zero);
         r8Lo = _mm_unpacklo_epi8(r8Rev, zero);
@@ -2625,7 +2635,7 @@ uint32_t compressBlockTH( uint8_t *src, Luma& l, uint32_t& compressed1, uint32_t
     }
 
     // 5) sets the start distance index
-    uint32_t startDistCandidate; // int? 
+    int32_t startDistCandidate;
     uint32_t avgDist;
 
     // Use the longest BGR values
@@ -2793,10 +2803,10 @@ static etcpak_force_inline uint64_t EncodeSelectors( uint64_t d, const T terr[2]
 
 }
 
-static etcpak_force_inline uint64_t ProcessRGB( const uint8_t* src )
+static etcpak_force_inline uint64_t ProcessRGB( const uint8_t* src, bool hqMode = false )
 {
 #ifdef __AVX2__
-    uint64_t d = CheckSolid_AVX2( src, false);
+    uint64_t d = CheckSolid_AVX2( src, hqMode );
     if( d != 0 ) return d;
 
     alignas(32) v4i a[8];
@@ -2824,12 +2834,12 @@ static etcpak_force_inline uint64_t ProcessRGB( const uint8_t* src )
     if ((idx == 0) || (idx == 2))
     {
         uint8_t bgrWeight[3] = { 14, 76, 38 };
-        FindBestFit_4x2_AVX2( terr, tsel, a, idx * 2, src , bgrWeight, false);
+        FindBestFit_4x2_AVX2( terr, tsel, a, idx * 2, src , bgrWeight, hqMode );
     }
     else
     {
         uint8_t bgrWeight[3] = { 14, 76, 38 };
-        FindBestFit_2x4_AVX2( terr, tsel, a, idx * 2, src, bgrWeight, false);
+        FindBestFit_2x4_AVX2( terr, tsel, a, idx * 2, src, bgrWeight, hqMode );
     }
 
     return EncodeSelectors_AVX2( d, terr, tsel, (idx % 2) == 1 );
@@ -3292,14 +3302,18 @@ static etcpak_force_inline void CalculateBGRWeight(Channels& ch, Luma& luma)
     bgrRange[B] = hMax(ch.b8, idx) - hMin(ch.b8, idx);
     bgrRange[G] = hMax(ch.g8, idx) - hMin(ch.g8, idx);
     bgrRange[R] = hMax(ch.r8, idx) - hMin(ch.r8, idx);
+    
     luma.maxBgrCh = (bgrRange[B] < bgrRange[G]) ?
         ((bgrRange[G] < bgrRange[R]) ? R : G) :
         ((bgrRange[B] < bgrRange[R]) ? R : B);
+    
     luma.maxBgrRange = bgrRange[luma.maxBgrCh];
     totalBgr[B] = _mm_sum_epu8(ch.b8);
     totalBgr[G] = _mm_sum_epu8(ch.g8);
     totalBgr[R] = _mm_sum_epu8(ch.r8);
+    
     sumOfTotalBgr = totalBgr[0] + totalBgr[1] + totalBgr[2];
+
     if ((bgrRange[B] > 23) && (totalBgr[B] > sumOfTotalBgr * 2 / 3))
     {
         luma.bgrWeight[B] = ((totalBgr[B] * 128 / sumOfTotalBgr) + 14) >> 1;
