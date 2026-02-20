@@ -157,8 +157,11 @@ int main( int argc, char** argv )
             break;
         }
     }
+
+#if _DEBUG
     printf("Mode = %d\n", useHeuristicsMode);
     printf("Used Thread = %d\n", cpus);
+#endif
 
     const char* input = nullptr;
     const char* output = nullptr;
