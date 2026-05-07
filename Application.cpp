@@ -45,7 +45,7 @@ void Usage()
     fprintf( stderr, "                         [etc1, etc2_r, etc2_rg, etc2_rgb, etc2_rgba, bc1, bc3, bc4, bc5, bc7]\n" );
     fprintf( stderr, "  -h header              use specified header for output file (defaults to pvr)\n" );
     fprintf( stderr, "                         [pvr, dds]\n" );
-    fprintf( stderr, "  --disable-heuristics   disable heuristic selector of compression mode\n" );
+    fprintf( stderr, "  --disable-heuristics   disable heuristic selector of compression mode (ETC2 and BC7)\n" );
     fprintf( stderr, "  --etc2_hq              QuickETC2-HQ mode \n");
     fprintf( stderr, "  --linear               input data is in linear space (disable sRGB conversion for mips)\n\n" );
     fprintf( stderr, "Output file name may be unneeded for some modes.\n" );
@@ -195,6 +195,11 @@ int main( int argc, char** argv )
     {
         bc7enc_compress_block_init();
         bc7enc_compress_block_params_init( &bc7params );
+
+        if (useHeuristicsMode < 1)
+            bc7params.m_use_heuristic_mode = false;
+        else
+            bc7params.m_use_heuristic_mode = true;
     }
 
     if( benchmark )

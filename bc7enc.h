@@ -49,6 +49,8 @@ struct bc7enc_compress_block_params
 	float m_mode6_error_weight;
 	float m_mode7_error_weight;
 
+	bool m_use_heuristic_mode = true;
+
 	void clear()
 	{
 		memset(this, 0, sizeof(*this));
